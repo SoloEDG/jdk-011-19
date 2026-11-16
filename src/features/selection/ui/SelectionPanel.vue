@@ -4,9 +4,18 @@ import { Scan, Trash2, PaintBucket, X } from "lucide-vue-next";
 import type { Workspace } from "../../../shared/document";
 import { regionSummary } from "../lib/summary";
 import { dimensions } from "../lib/region";
+import { regionTouchesUnloaded } from "../model/selection";
 const props = defineProps<{ state: Workspace }>();
 defineEmits<{ fill: []; remove: []; clear: []; start: [] }>();
-const stats = computed(() => regionSummary(props.state));
+const stats = computed(() => {
+  void props.state.doc.revision;
+  void props.state.loadedChunks;
+  return regionSummary(props.state);
+});
+const unloaded = computed(() => {
+  void props.state.loadedChunks;
+  return regionTouchesUnloaded(props.state);
+});
 </script>
 <template>
   <section class="panel">
@@ -18,7 +27,14 @@ const stats = computed(() => regionSummary(props.state));
       <b
         >{{ dimensions(state.region).x }} × {{ dimensions(state.region).y }} ×
         {{ dimensions(state.region).z }}</b
-      ><span>{{ stats.occupied }} 个方块 · {{ stats.empty }} 个空位</span>
+      ><span
+        >{{ stats.complete ? "" : "约 "
+        }}{{ stats.occupied.toLocaleString() }} 个方块 ·
+        {{ stats.complete ? stats.empty.toLocaleString() : "估算" }} 个空位</span
+      >
+      <span v-if="!stats.complete || unloaded" class="muted small"
+        >选区跨越未加载区块，确认前会依据世界数据完整校验</span
+      >
       <div class="row">
         <button class="soft" @click="$emit('fill')">
           <PaintBucket :size="14" />填充</button

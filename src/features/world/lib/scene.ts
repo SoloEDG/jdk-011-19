@@ -1,8 +1,23 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { blockMeshes, disposeGroup } from "./meshes";
+import {
+  buildChunkMesh,
+  disposeChunkMesh,
+  type ChunkMesh,
+} from "./meshes";
+import {
+  hasLoaded,
+  loadedChunks,
+  takeDirtyChunks,
+  type LoadedChunk,
+} from "./chunks";
+import { createStreamer } from "./stream";
 import type { Workspace, Vec3 } from "../../../shared/document";
 import type { SceneHit } from "../../../shared/commands";
+
+const VIEW_RADIUS = 3;
+const CHUNKS_PER_FRAME = 2;
+
 export function mountScene(
   host: HTMLElement,
   state: Workspace,
@@ -10,8 +25,8 @@ export function mountScene(
 ) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color("#dce5df");
-  scene.fog = new THREE.Fog("#dce5df", 55, 110);
-  const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 200);
+  scene.fog = new THREE.Fog("#dce5df", 60, 150);
+  const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 400);
   camera.position.set(30, 27, 34);
   const renderer = new THREE.WebGLRenderer({
     antialias: true,
@@ -46,19 +61,29 @@ export function mountScene(
   });
   sun.shadow.bias = -0.001;
   scene.add(sun);
+  scene.add(sun.target);
+
+  // The ground plane and grid follow the player so the endless world always
+  // has a visible base without loading every chunk.
   const floor = new THREE.Mesh(
-    new THREE.PlaneGeometry(200, 200),
+    new THREE.PlaneGeometry(400, 400),
     new THREE.MeshStandardMaterial({ color: "#cdd8d0", roughness: 1 }),
   );
   floor.rotation.x = -Math.PI / 2;
   floor.position.y = -0.08;
   floor.receiveShadow = true;
   scene.add(floor);
-  const grid = new THREE.GridHelper(32, 32, "#abb9ad", "#c3cec3");
+  const grid = new THREE.GridHelper(400, 400, "#abb9ad", "#c3cec3");
   grid.position.y = 0.005;
+  grid.material.opacity = 0.35;
+  grid.material.transparent = true;
   scene.add(grid);
-  let blocks = blockMeshes(state.doc);
-  scene.add(blocks);
+
+  const chunkMeshes = new Map<string, ChunkMesh>();
+  const streamer = createStreamer(VIEW_RADIUS, CHUNKS_PER_FRAME);
+  const currentDoc = () => state.doc;
+  let lastDoc = state.doc;
+
   const cursor = new THREE.Mesh(
     new THREE.BoxGeometry(1.02, 1.02, 1.02),
     new THREE.MeshBasicMaterial({ color: "#e9b261", wireframe: true }),
@@ -92,6 +117,13 @@ export function mountScene(
   const ray = new THREE.Raycaster();
   const mouse = new THREE.Vector2();
   let hit: SceneHit | null = null;
+
+  function pickables() {
+    const out: THREE.InstancedMesh[] = [];
+    for (const mesh of chunkMeshes.values()) out.push(...mesh.pickables);
+    return out;
+  }
+
   const move = (e: PointerEvent) => {
     const r = renderer.domElement.getBoundingClientRect();
     mouse.set(
@@ -99,10 +131,12 @@ export function mountScene(
       (-(e.clientY - r.top) / r.height) * 2 + 1,
     );
     ray.setFromCamera(mouse, camera);
-    const h = ray.intersectObjects(blocks.children)[0];
+    const h = ray.intersectObjects(pickables(), false)[0];
     hit = null;
     if (h && h.instanceId !== undefined && h.face) {
-      const cell = h.object.userData.cells[h.instanceId] as Vec3;
+      const cell = (h.object as THREE.InstancedMesh).userData.cells[
+        h.instanceId
+      ] as Vec3;
       const n = h.face.normal;
       hit = {
         cell: { ...cell },
@@ -137,22 +171,80 @@ export function mountScene(
     renderer.setSize(w, h);
   });
   resize.observe(host);
-  let frame = 0,
-    revision = -1;
+
+  function refreshChunk(doc: ReturnType<typeof currentDoc>, ck: string) {
+    const old = chunkMeshes.get(ck);
+    if (old) {
+      scene.remove(old.group);
+      disposeChunkMesh(old);
+      chunkMeshes.delete(ck);
+    }
+    const chunk: LoadedChunk | undefined = loadedChunks(doc).get(ck);
+    if (!chunk) return;
+    const mesh = buildChunkMesh(chunk);
+    chunkMeshes.set(ck, mesh);
+    scene.add(mesh.group);
+  }
+
+  function clearMeshes() {
+    for (const [ck, mesh] of chunkMeshes) {
+      scene.remove(mesh.group);
+      disposeChunkMesh(mesh);
+      chunkMeshes.delete(ck);
+    }
+  }
+
+  /** Sync meshes with the resident chunks, then rebuild edited ones. */
+  function reconcile(doc: ReturnType<typeof currentDoc>) {
+    const dirty = new Set(takeDirtyChunks(doc));
+    // Loaded-but-not-meshed chunks (fresh streaming) get a mesh immediately.
+    for (const ck of loadedChunks(doc).keys())
+      if (!chunkMeshes.has(ck)) dirty.add(ck);
+    for (const [ck, mesh] of [...chunkMeshes]) {
+      if (hasLoaded(doc, ck)) continue;
+      scene.remove(mesh.group);
+      disposeChunkMesh(mesh);
+      chunkMeshes.delete(ck);
+    }
+    for (const ck of dirty) refreshChunk(doc, ck);
+  }
+
+  let frame = 0;
+  let lastPlayer = { x: state.doc.player.x, z: state.doc.player.z };
   function animate() {
     frame = requestAnimationFrame(animate);
-    if (revision !== state.doc.revision) {
-      scene.remove(blocks);
-      disposeGroup(blocks);
-      blocks = blockMeshes(state.doc);
-      scene.add(blocks);
-      revision = state.doc.revision;
+    const doc = state.doc;
+    if (doc !== lastDoc) {
+      lastDoc = doc;
+      clearMeshes();
+      streamer.reset(doc, doc.player);
+      lastPlayer = { x: doc.player.x, z: doc.player.z };
     }
-    avatar.position.set(
-      state.doc.player.x,
-      state.doc.player.y,
-      state.doc.player.z,
-    );
+    streamer.update(doc, doc.player);
+    reconcile(doc);
+    const resident = streamer.stats(doc).loaded;
+    if (resident !== state.loadedChunks) state.loadedChunks = resident;
+    const p = doc.player;
+    floor.position.set(Math.round(p.x), -0.08, Math.round(p.z));
+    grid.position.set(Math.round(p.x), 0.005, Math.round(p.z));
+    avatar.position.set(p.x, p.y, p.z);
+    // In walk mode the camera travels with the player; otherwise free orbit
+    // would leave the avatar far behind in a streamed world.
+    if (state.mode === "walk") {
+      const dx = p.x - lastPlayer.x;
+      const dz = p.z - lastPlayer.z;
+      if (dx || dz) {
+        camera.position.x += dx;
+        camera.position.z += dz;
+        controls.target.x += dx;
+        controls.target.z += dz;
+      }
+    }
+    lastPlayer = { x: p.x, z: p.z };
+    // Keep the sun (and its shadow frustum) centred on the player so lighting
+    // stays correct arbitrarily far from the origin.
+    sun.position.set(p.x - 15, 32, p.z + 18);
+    sun.target.position.set(p.x, 2, p.z);
     if (state.region) {
       const { a, b } = state.region;
       region.visible = true;
@@ -180,7 +272,8 @@ export function mountScene(
       cancelAnimationFrame(frame);
       resize.disconnect();
       controls.dispose();
-      disposeGroup(blocks);
+      clearMeshes();
+      streamer.dispose();
       renderer.dispose();
       renderer.domElement.remove();
     },

@@ -85,7 +85,8 @@ function fullscreen() {
           </div>
           <div class="world-meta">
             <span class="status-dot"></span> 世界运行中
-            <span class="meta-divider">/</span> 32 × 32 × 20
+            <span class="meta-divider">/</span> 无限区块 · 已加载
+            {{ state.loadedChunks }}
           </div>
         </div>
         <div class="viewport-wrap">
@@ -142,7 +143,7 @@ function fullscreen() {
             <p>
               单击放置或拆除 · 拖动旋转视角<br />右键拖动平移 · 滚轮缩放<br />R
               选择两个角点 · Esc 取消选择<br />Tab 切换行走 · WASD 移动 ·
-              空格跳跃
+              空格跳跃<br />世界按区块流式加载，可一直向前探索
             </p>
             <button class="soft" @click="help = false">开始建造</button>
           </div>
@@ -152,7 +153,7 @@ function fullscreen() {
             ><MousePointer2 :size="13" /> 单击建造 <i>·</i> 拖动旋转
             <i>·</i> 滚轮缩放</span
           ><span
-            >{{ stats.total.toLocaleString() }} 方块 <i>·</i> 高度
+            >{{ stats.total.toLocaleString() }} 亲手放置 <i>·</i> 最高
             {{ stats.highest }} <i>·</i> {{ stats.materials }} 种材质</span
           >
         </div>

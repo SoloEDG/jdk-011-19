@@ -1,9 +1,10 @@
 import { reactive } from "vue";
 import type { Workspace, Tool, MaterialId } from "../shared/document";
 import type { SceneHit } from "../shared/commands";
-import { createWorld, editCells } from "../features/world";
-import { pickCorner, regionCells, clearRegion } from "../features/selection";
-import { chooseMaterial, selectSlot } from "../features/inventory";
+import { createWorld } from "../features/world/lib/terrain";
+import { editCells, editRegion } from "../features/world/model/edit";
+import { pickCorner, clearRegion } from "../features/selection/model/selection";
+import { chooseMaterial, selectSlot } from "../features/inventory/model/catalog";
 export function createWorkspace() {
   return reactive<Workspace>({
     doc: createWorld(),
@@ -15,6 +16,7 @@ export function createWorkspace() {
     dirty: false,
     mode: "build",
     savedAt: null,
+    loadedChunks: 0,
   });
 }
 export function commandRouter(s: Workspace) {
@@ -35,9 +37,17 @@ export function commandRouter(s: Workspace) {
           s.tool === "remove",
         ).message;
     },
+    /**
+     * Batch edits validate the entire region before writing anything, using
+     * the sparse world data rather than resident meshes, so a selection that
+     * crosses unloaded chunks behaves exactly like one that does not.
+     */
     region(remove = false) {
-      if (s.region)
-        s.message = editCells(s, regionCells(s.region), remove).message;
+      if (!s.region) {
+        s.message = "请先选择区域";
+        return;
+      }
+      s.message = editRegion(s, remove).message;
     },
     clear() {
       clearRegion(s);

@@ -1,4 +1,4 @@
 export { default as WorldViewport } from "./ui/WorldViewport.vue";
-export { createWorld } from "./lib/terrain";
+export { createWorld, generatedBlockAt, surfaceHeight } from "./lib/terrain";
 export { summarize } from "./lib/queries";
-export { editCells } from "./model/edit";
+export { editCells, planBatch, commitPlan, editRegion } from "./model/edit";
